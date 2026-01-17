@@ -2,82 +2,63 @@ import os
 import deepl
 from dotenv import load_dotenv
 from openai import OpenAI
+import database # We import your new database file
 
-# 1. Load Keys
+# 1. LOAD KEYS
 load_dotenv()
-openai_key = os.getenv("OPENAI_API_KEY")
-deepl_key = os.getenv("DEEPL_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+translator = deepl.Translator(os.getenv("DEEPL_API_KEY"))
 
-# 2. Initialize Clients
-client = OpenAI(api_key=openai_key)
-translator = deepl.Translator(deepl_key)
-
-# 3. The Senior Developer Persona (Kept from before)
+# 2. SENIOR ARCHITECT PERSONA
 system_instruction = """
-ROLE:
-You are Jarvis, the Senior Lead Developer and AI Architect for Sandro's Agency.
-Your Project Manager is Sandro. 
-Your goal is to build autonomous, bug-resistant Agentic Workflows (like "Zack").
+ROLE: Senior Lead Developer & Architect (Jarvis).
+USER: Sandro (Project Manager).
 
-CORE RESPONSIBILITIES:
-1. CODE GENERATION: Write production-ready, modular Python code.
-2. EXPLANATION: Explain 'WHY' you chose a specific library or pattern.
-3. TESTING: Provide step-by-step instructions on how Sandro can test the code.
-4. SCALABILITY: Always design for 10,000+ clients. Code must be efficient.
-5. SELF-HEALING: Prioritize "try/except" blocks and error logging.
+MISSION:
+- Generate production-ready Python code for Agentic Workflows ("Zack").
+- Always use 'try/except' blocks for bug resistance.
+- When writing code, assume Sandro will download it as a file.
 
-CONTEXT:
-- We are building "Zack" (Social Media Agent) for small businesses in Georgia.
-- We use Streamlit, LangChain, and OpenAI.
+OUTPUT RULES:
+1. Explain the Logic.
+2. Provide the Code (in ```python blocks).
+3. Explain how to test it.
 """
 
-def ask_jarvis(history):
-    """
-    Internal function: Talks to OpenAI in English.
-    """
+def ask_jarvis_bilingual(user_text):
     try:
-        messages_payload = [{"role": "system", "content": system_instruction}] + history
+        # A. TRANSLATE INPUT (User -> English)
+        input_translation = translator.translate_text(user_text, target_lang="EN-US")
+        english_text = input_translation.text
+        source_lang = input_translation.detected_source_lang
+        
+        # B. SAVE TO DB (User's English input)
+        database.save_message("user", english_text, source_lang)
+
+        # C. LOAD HISTORY (Context)
+        # We pull the last 10 messages from the DB so he remembers context
+        history_context = database.load_last_n_messages(10)
+        messages_payload = [{"role": "system", "content": system_instruction}] + history_context
+
+        # D. GET REPLY (OpenAI)
         response = client.chat.completions.create(
             model="gpt-4o", 
             messages=messages_payload,
             temperature=0.2,
         )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"Error: {e}"
+        jarvis_reply_english = response.choices[0].message.content
 
-def ask_jarvis_bilingual(user_text, chat_history):
-    """
-    New Wrapper: Handles the Translation Layer (Georgian <-> English).
-    """
-    try:
-        # STEP A: Translate INBOUND (User -> English)
-        # DeepL automatically detects if you wrote in Georgian.
-        # target_lang="EN-US" ensures Jarvis always reads English.
-        input_translation = translator.translate_text(user_text, target_lang="EN-US")
-        english_text = input_translation.text
-        source_lang = input_translation.detected_source_lang
-        
-        # Debug print to see what happens in the terminal
-        print(f"Original: {user_text} | Detected: {source_lang} | English: {english_text}")
+        # E. SAVE TO DB (Jarvis's Reply)
+        database.save_message("assistant", jarvis_reply_english, "en")
 
-        # STEP B: Talk to Jarvis (in English)
-        # We append the translated English text to history temporarily for processing
-        temp_history = chat_history + [{"role": "user", "content": english_text}]
-        jarvis_reply_english = ask_jarvis(temp_history)
-
-        # STEP C: Translate OUTBOUND (English -> User)
-        # Logic: If you spoke Georgian (KA), Jarvis replies in Georgian (KA).
-        # If you spoke English (EN), Jarvis replies in English (EN).
-        
+        # F. TRANSLATE OUTPUT (English -> User)
         if source_lang == "KA":
             output_translation = translator.translate_text(jarvis_reply_english, target_lang="KA")
             final_reply = output_translation.text
         else:
-            # If you wrote in English (or anything else), he keeps it English.
             final_reply = jarvis_reply_english
 
         return final_reply, english_text
 
     except Exception as e:
-        return f"Translation Error: {e}", user_text
+        return f"Error: {e}", user_text
